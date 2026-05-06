@@ -1,3 +1,13 @@
 .env
 __pycache__/
 *.pyc
+
+workspace/
+
+venv/
+.venv/
+
+.vscode/
+.idea/
+
+*.log
