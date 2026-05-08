@@ -8,7 +8,7 @@ from collections import Counter, deque
 from typing import Any, Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
-from google import genai
+from openai import OpenAI
 
 from actions import (
     check_tool,
@@ -23,8 +23,11 @@ from prompts import few_shot_messages, system_prompt
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_ID = "gemini-2.5-flash-lite"
+# Use Ollama for local Qwen model inference
+# Ensure Ollama is running: ollama serve (default port 11434)
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+client = OpenAI(api_key="ollama", base_url=OLLAMA_BASE_URL)
+MODEL_ID = os.getenv("MODEL_ID", "qwen2")
 
 RATE_LIMIT_RPM = 5
 MIN_INTERVAL = 60.0 / RATE_LIMIT_RPM
@@ -217,11 +220,32 @@ def call_model(messages, system_instruction, retries=3, delay=10):
                     time.sleep(wait)
                 _last_call_time = time.time()
 
-            return client.models.generate_content(
+            # Convert Gemini-style messages to OpenAI format
+            openai_messages = [{"role": "system", "content": system_instruction}]
+            for msg in messages:
+                role = msg.get("role", "user")
+                parts = msg.get("parts", [])
+                # Concatenate text from all parts
+                text_content = "".join(
+                    part.get("text", "") if isinstance(part, dict) else str(part)
+                    for part in parts
+                )
+                openai_messages.append({"role": role, "content": text_content})
+
+            response = client.chat.completions.create(
                 model=MODEL_ID,
-                contents=messages,
-                config={"system_instruction": system_instruction},
+                messages=openai_messages,
+                temperature=0.7,
+                max_tokens=4096,
             )
+            
+            # Return response in a compatible format
+            class ResponseWrapper:
+                def __init__(self, text):
+                    self.text = text
+                    
+            return ResponseWrapper(response.choices[0].message.content)
+            
         except Exception as e:
             errors.append(str(e))
             time.sleep(delay)
