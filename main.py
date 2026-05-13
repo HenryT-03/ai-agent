@@ -11,20 +11,22 @@ from dotenv import load_dotenv
 from google import genai
 
 from actions import (
-    check_tool,
     init_run,
     install_dependency,
     list_files,
     read_file,
     run_script,
     write_script,
+    run_mafft,
+    run_iqtree,
+    probe_environment,
 )
 from prompts import few_shot_messages, system_prompt
 
 load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_ID = "gemini-2.5-flash-lite"
+MODEL_ID = "gemini-3.1-flash-lite"
 
 RATE_LIMIT_RPM = 5
 MIN_INTERVAL = 60.0 / RATE_LIMIT_RPM
@@ -59,6 +61,7 @@ def init_state(query: str, run_name: str) -> Dict[str, Any]:
         "same_error_count": 0,
         "replan_count": 0,
         "forced_replan_reason": None,
+        "environment": {},
     }
 
 
@@ -115,14 +118,6 @@ def update_plan(state: Dict[str, Any], subgoals: List[str], focus: Optional[str]
     return "Plan updated."
 
 
-def set_focus(state: Dict[str, Any], focus: str) -> str:
-    focus = str(focus).strip()
-    if not focus:
-        return "Focus not updated: empty focus."
-    state["current_focus"] = focus
-    return "Focus updated."
-
-
 def mark_completed_from_listing(state: Dict[str, Any], output: Any) -> None:
     paths, count, total_bytes = parse_file_listing(output)
     state["completed"] = sorted(paths)
@@ -168,14 +163,11 @@ def update_entropy_metrics(state: Dict[str, Any], action: Dict[str, Any], result
     if func == "list_files":
         mark_completed_from_listing(state, result)
 
-    if state["identical_action_count"] >= 3:
-        return "same action was selected three times in the recent action window"
+    if state["identical_action_count"] >= 3 and err_type:
+        return "same action was selected multiple times after repeated failures"
 
     if err_type and state["same_error_count"] >= 2:
         return f"same error class repeated: {err_type}"
-
-    if func == "list_files" and state["no_output_progress_count"] >= 2:
-        return "repeated output checks produced no new files or byte growth"
 
     return None
 
@@ -184,18 +176,12 @@ def build_state_block(state: Dict[str, Any]) -> str:
     serializable = {
         "goal": state["goal"],
         "run_name": state["run_name"],
+        "environment": state["environment"],
         "subgoals": state["subgoals"],
         "completed_files": state["completed"],
         "focus": state["current_focus"],
         "failures": state["failures"][-6:],
         "last_error": state["last_error_type"],
-        "entropy_metrics": {
-            "identical_action_count": state["identical_action_count"],
-            "same_error_count": state["same_error_count"],
-            "no_output_progress_count": state["no_output_progress_count"],
-            "replan_count": state["replan_count"],
-        },
-        "forced_replan_reason": state["forced_replan_reason"],
     }
     return "STATE\n" + json.dumps(serializable, indent=2, ensure_ascii=False)
 
@@ -266,15 +252,14 @@ def dispatch_action(state: Dict[str, Any], action: Dict[str, Any]) -> Any:
         "run_script": run_script,
         "read_file": read_file,
         "install_dependency": install_dependency,
-        "check_tool": check_tool,
         "list_files": list_files,
+        "run_mafft": run_mafft,
+        "run_iqtree": run_iqtree,
+        "probe_environment": probe_environment,
     }
 
     if func == "plan":
         return update_plan(state, args.get("subgoals", []), args.get("focus"))
-
-    if func == "set_focus":
-        return set_focus(state, args.get("focus", ""))
 
     if func not in available_actions:
         state["failures"].append("invalid_action")
@@ -282,6 +267,53 @@ def dispatch_action(state: Dict[str, Any], action: Dict[str, Any]) -> Any:
         return {"stdout": "", "stderr": f"Invalid action: {func}", "returncode": 1}
 
     return available_actions[func](**args)
+
+
+def deterministic_retry(state: Dict[str, Any], action: Dict[str, Any], result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Apply deterministic fixes for common, solvable failures.
+    Return a dict with instructions if a retry is recommended, or None.
+    
+    Handles:
+    - Missing Python dependencies → auto-install and signal retry
+    - Encoding issues → log suggestion
+    """
+    # Only process dict results (subprocess calls); skip string results (state updates)
+    if not isinstance(result, dict):
+        return None
+    
+    if result.get("returncode") == 0:
+        return None  # Success, no retry needed
+    
+    stderr = (result.get("stderr") or "").lower()
+    func = action.get("function_name")
+    
+    # Pattern: ModuleNotFoundError or "no module named"
+    if func == "run_script" and ("modulenotfound" in stderr or "no module named" in stderr):
+        # Extract package name if possible
+        match_patterns = [
+            r"no module named ['\"]?(\w+)['\"]?",
+            r"modulenotfounderror[^:]*:\s*no module named ['\"]?(\w+)['\"]?",
+        ]
+        package = None
+        for pattern in match_patterns:
+            m = re.search(pattern, stderr)
+            if m:
+                package = m.group(1)
+                break
+        
+        if package:
+            # Auto-install and return signal
+            print(f"[RETRY] Auto-installing missing Python dependency: {package}")
+            install_result = install_dependency(package, "python")
+            if install_result.get("returncode") == 0:
+                return {"retry_action": action, "note": f"Installed {package}; please re-execute the script"}
+    
+    # Pattern: encoding errors
+    if "decode" in stderr or "encoding" in stderr or "codec" in stderr:
+        print("[SUGGESTION] Detected encoding issue; try error='ignore' in file operations")
+    
+    return None
 
 
 def force_replan(state: Dict[str, Any], reason: str, messages: List[Dict[str, Any]]) -> None:
@@ -301,6 +333,11 @@ def force_replan(state: Dict[str, Any], reason: str, messages: List[Dict[str, An
 def run_agent(query: str):
     run_name = init_run()
     state = init_state(query, run_name)
+
+    state["environment"] = probe_environment(
+        tools=["mafft", "iqtree"],
+        python_packages=["Bio"],
+    )
     print(f"Run directory: workspace/runs/{run_name}/")
 
     messages = few_shot_messages + [
@@ -318,8 +355,9 @@ def run_agent(query: str):
 
         print(text)
 
-        if "Answer:" in text and "Action:" not in text:
-            return text
+        answer_match = re.search(r"^\s*Answer:\s*(.+)", text, re.MULTILINE | re.DOTALL)
+        if answer_match:
+            return answer_match.group(0).strip()
 
         action = extract_action(text)
         if not action:
@@ -330,6 +368,10 @@ def run_agent(query: str):
 
         result = dispatch_action(state, action)
         print(f"Action_Response: {result}")
+
+        retry_signal = deterministic_retry(state, action, result)
+        if retry_signal:
+            print(f"[RETRY] {retry_signal.get('note', 'Retrying...')}")
 
         messages.append({"role": "model", "parts": [{"text": text}]})
         messages.append({"role": "user", "parts": [{"text": f"Action_Response: {result}"}]})
