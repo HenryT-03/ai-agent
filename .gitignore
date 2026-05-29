@@ -1,13 +1,127 @@
-.env
-__pycache__/
-*.pyc
+# ---------------------------
+# Environment / Secrets
+# ---------------------------
 
-workspace/
+.env
+.env.*
+*.env
+
+# ---------------------------
+# Python
+# ---------------------------
+
+__pycache__/
+**/__pycache__/
+
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+*.pyd
+*.dll
+
+# Distribution / packaging
+.Python
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+share/python-wheels/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache/
+pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Type checking
+.pyre/
+.dmypy.json
+dmypy.json
+
+# ---------------------------
+# Virtual Environments
+# ---------------------------
 
 venv/
 .venv/
+env/
+ENV/
+
+# ---------------------------
+# IDE / Editor
+# ---------------------------
 
 .vscode/
 .idea/
 
+*.swp
+*.swo
+*~
+
+# ---------------------------
+# OS Files
+# ---------------------------
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------------------------
+# Logs / Runtime Artifacts
+# ---------------------------
+
 *.log
+logs/
+
+# ---------------------------
+# Project Runtime Data
+# ---------------------------
+
+workspace/
+runs/
+
+# ---------------------------
+# Generated / Temporary Files
+# ---------------------------
+
+tmp/
+temp/
+*.tmp
+
+# ---------------------------
+# Documentation / Notes
+# ---------------------------
+
+*.md
+
+# ---------------------------
+# Misc
+# ---------------------------
+
+*.bak
+*.orig
